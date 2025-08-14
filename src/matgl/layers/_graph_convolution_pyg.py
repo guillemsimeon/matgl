@@ -76,6 +76,8 @@ class TensorNetInteractionPYG(MessagePassing):
         edge_index = graph.edge_index
         edge_weight = graph.bond_dist  # Assuming bond_dist is stored in graph
         edge_attr = graph.edge_attr  # Assuming edge_attr is stored in graph
+        
+        Id = torch.eye(3, device=edge_attr.device, dtype=edge_attr.dtype).view(1, 3, 3, 1)
 
         # Process edge attributes
         C = cosine_cutoff(edge_weight, self.cutoff)
@@ -84,15 +86,15 @@ class TensorNetInteractionPYG(MessagePassing):
         edge_attr = (edge_attr * C.view(-1, 1)).reshape(edge_attr.shape[0], self.units, 3)
 
         # Normalize input tensor
-        X = X / (tensor_norm(X) + 1)[..., None, None]
+        X = X / (tensor_norm(X) + 1).unsqueeze(-2).unsqueeze(-2)
 
         # Decompose input tensor
-        scalars, skew_metrices, traceless_tensors = decompose_tensor(X)
+        scalars, skew_metrices, traceless_tensors = decompose_tensor(X, Id)
 
         # Apply tensor linear transformations
-        scalars = self.linears_tensor[0](scalars.permute(0, 2, 3, 1)).permute(0, 3, 1, 2)
-        skew_metrices = self.linears_tensor[1](skew_metrices.permute(0, 2, 3, 1)).permute(0, 3, 1, 2)
-        traceless_tensors = self.linears_tensor[2](traceless_tensors.permute(0, 2, 3, 1)).permute(0, 3, 1, 2)
+        scalars = self.linears_tensor[0](scalars)
+        skew_metrices = self.linears_tensor[1](skew_metrices)
+        traceless_tensors = self.linears_tensor[2](traceless_tensors)
         Y = scalars + skew_metrices + traceless_tensors
 
         # Message passing
@@ -102,34 +104,42 @@ class TensorNetInteractionPYG(MessagePassing):
         graph.edge_attr_processed = edge_attr
 
         messages = self.message(edge_index, graph.x_I, graph.x_A, graph.x_S, graph.edge_attr_processed)
-        Im, Am, Sm = self.aggregate(messages, edge_index[0], X.size(0))
-        # Combine messages
-        msg = Im + Am + Sm
+        msg = self.aggregate(messages, edge_index[0], X.size(0))
+        
+        # Permute to be able to use matmul: [..., 3, 3, units] -> [..., units, 3, 3]
+        Y = Y.permute(0, 3, 1, 2)
+        msg = msg.permute(0, 3, 1, 2)
 
         # Apply group action
         if self.equivariance_invariance_group == "O(3)":
             A = torch.matmul(msg, Y)
             B = torch.matmul(Y, msg)
-            scalars, skew_metrices, traceless_tensors = decompose_tensor(A + B)
+            scalars, skew_metrices, traceless_tensors = decompose_tensor(
+                (A + B).permute(0, 2, 3, 1), Id # Undo permute to original layout
+            )
         elif self.equivariance_invariance_group == "SO(3)":
             B = torch.matmul(Y, msg)
-            scalars, skew_metrices, traceless_tensors = decompose_tensor(2 * B)
+            scalars, skew_metrices, traceless_tensors = decompose_tensor(
+                (2 * B).permute(0, 2, 3, 1), Id
+            )
         else:
             raise ValueError("equivariance_invariance_group must be 'O(3)' or 'SO(3)'")
 
         # Normalize and apply final tensor transformations
-        normp1 = (tensor_norm(scalars + skew_metrices + traceless_tensors) + 1)[..., None, None]
+        normp1 = (tensor_norm(scalars + skew_metrices + traceless_tensors) + 1).unsqueeze(-2).unsqueeze(-2)
         scalars = scalars / normp1
         skew_metrices = skew_metrices / normp1
         traceless_tensors = traceless_tensors / normp1
 
-        scalars = self.linears_tensor[3](scalars.permute(0, 2, 3, 1)).permute(0, 3, 1, 2)
-        skew_metrices = self.linears_tensor[4](skew_metrices.permute(0, 2, 3, 1)).permute(0, 3, 1, 2)
-        traceless_tensors = self.linears_tensor[5](traceless_tensors.permute(0, 2, 3, 1)).permute(0, 3, 1, 2)
+        scalars = self.linears_tensor[3](scalars)
+        skew_metrices = self.linears_tensor[4](skew_metrices)
+        traceless_tensors = self.linears_tensor[5](traceless_tensors)
 
         # Compute update
         dX = scalars + skew_metrices + traceless_tensors
-        X = X + dX + torch.matmul(dX, dX)
+        dX2 = dX.permute(0, 3, 1, 2) # Permute to be able to use matmul
+        dX2 = torch.matmul(dX2, dX2)
+        X = X + dX + dX2.permute(0, 2, 3, 1) # Undo permute, all consistent
 
         return X
 
@@ -147,7 +157,5 @@ class TensorNetInteractionPYG(MessagePassing):
     def aggregate(self, inputs, index, dim_size):
         """Aggregate messages for node updates."""
         scalars, skew_matrices, traceless_tensors = inputs
-        scalars_agg = scatter_add(scalars, index, dim_size=dim_size)
-        skew_matrices_agg = scatter_add(skew_matrices, index, dim_size=dim_size)
-        traceless_tensors_agg = scatter_add(traceless_tensors, index, dim_size=dim_size)
-        return scalars_agg, skew_matrices_agg, traceless_tensors_agg
+        msg = scatter_add(scalars + skew_matrices + traceless_tensors, index, dim_size=dim_size)
+        return msg
