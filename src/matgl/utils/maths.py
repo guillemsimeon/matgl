@@ -303,41 +303,39 @@ def vector_to_skewtensor(vector: torch.Tensor):
         dim=1,
     )
     tensor = tensor.view(-1, 3, 3)
-    return tensor.squeeze(0)
+    return tensor.squeeze(0) # [N_edges, 3, 3]
 
 
-def vector_to_symtensor(vector: torch.Tensor):
+def vector_to_symtensor(vector: torch.Tensor, Id: torch.Tensor):
     """Create a symmetric traceless tensor from the outer product of a vector with itself.
 
     Args:
         vector: input vectors.
+        Id: identity matrix.
 
     Returns:
         resulting symmetric traceless tensors
     """
-    tensor = torch.matmul(vector.unsqueeze(-1), vector.unsqueeze(-2))
-    scalars = (tensor.diagonal(offset=0, dim1=-1, dim2=-2)).mean(-1)[..., None, None] * torch.eye(
-        3, 3, device=tensor.device, dtype=tensor.dtype
-    )
-    traceless_tensors = 0.5 * (tensor + tensor.transpose(-2, -1)) - scalars
-    return traceless_tensors
+    tensor = vector.unsqueeze(-1) * vector.unsqueeze(-2)
+    scalars = (tensor.diagonal(offset=0, dim1=-1, dim2=-2)).mean(-1).unsqueeze(-1).unsqueeze(-1).unsqueeze(-1) * Id
+    traceless_tensors = tensor - scalars
+    return traceless_tensors # [N_edges, 3, 3, 1]
 
 
 # Full tensor decomposition into irreducible components
-def decompose_tensor(tensor: torch.Tensor):
-    """Create a symmetric traceless tensor from the outer product of a vector with itself.
+def decompose_tensor(tensor: torch.Tensor, Id: torch.Tensor):
+    """Decomposes a full tensor into irreducible components.
 
     Args:
         tensor: input tensors.
+        Id: identity matrix.
 
     Returns:
-        resulting symmetric traceless tensors.
+        resulting tensor decomposition.
     """
-    scalars = (tensor.diagonal(offset=0, dim1=-1, dim2=-2)).mean(-1)[..., None, None] * torch.eye(
-        3, 3, device=tensor.device, dtype=tensor.dtype
-    )
-    skew_metrices = 0.5 * (tensor - tensor.transpose(-2, -1))
-    traceless_tensors = 0.5 * (tensor + tensor.transpose(-2, -1)) - scalars
+    scalars = (tensor.diagonal(offset=0, dim1=-1, dim2=-2)).mean(-1).unsqueeze(-2).unsqueeze(-2) * Id
+    skew_metrices = 0.5 * (tensor - tensor.transpose(-3, -2))
+    traceless_tensors = tensor - skew_matrices - scalars
     return scalars, skew_metrices, traceless_tensors
 
 
@@ -363,9 +361,9 @@ def new_radial_tensor(
     Returns:
         resulting new radial tensors
     """
-    scalars = f_I[..., None, None] * scalars
-    skew_metrices = f_A[..., None, None] * skew_metrices
-    traceless_tensors = f_S[..., None, None] * traceless_tensors
+    scalars = f_I.unsqueeze(-2).unsqueeze(-2) * scalars
+    skew_metrices = f_A.unsqueeze(-2).unsqueeze(-2) * skew_metrices
+    traceless_tensors = f_S.unsqueeze(-2).unsqueeze(-2) * traceless_tensors
     return scalars, skew_metrices, traceless_tensors
 
 
@@ -378,4 +376,4 @@ def tensor_norm(tensor: torch.Tensor):
     Returns:
         resulting Frobenius norm of tensors
     """
-    return (tensor**2).sum((-2, -1))
+    return (tensor**2).sum((-3, -2))
