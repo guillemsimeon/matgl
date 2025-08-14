@@ -226,12 +226,16 @@ class TensorNet(MatGLModel):
 
         # Expand distances with radial basis functions
         g.edge_attr = self.bond_expansion(g.bond_dist)
+
+        # Create identity matrix
+        Id = torch.eye(3, device=bond_vec.device, dtype=bond_vec.dtype).view(1, 3, 3, 1)
+        
         # Embedding layer
         X, edge_feat = self.tensor_embedding(g, state_attr)
         # Interaction layers
         for layer in self.layers:
             X = layer(g, X)
-        scalars, skew_metrices, traceless_tensors = decompose_tensor(X)
+        scalars, skew_metrices, traceless_tensors = decompose_tensor(X, Id)
 
         x = torch.cat((tensor_norm(scalars), tensor_norm(skew_metrices), tensor_norm(traceless_tensors)), dim=-1)
         x = self.out_norm(x)
