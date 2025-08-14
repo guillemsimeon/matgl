@@ -10,7 +10,7 @@ from torch_geometric.nn import MessagePassing
 
 import matgl
 from matgl.utils.cutoff import cosine_cutoff
-from matgl.utils.maths import new_radial_tensor, scatter_add, tensor_norm, vector_to_skewtensor, vector_to_symtensor
+from matgl.utils.maths import new_radial_tensor, scatter_add, tensor_norm, vector_to_skewtensor, vector_to_symtensor, decompose_tensor
 
 if TYPE_CHECKING:
     from torch_geometric.data import Data
@@ -80,18 +80,16 @@ class TensorEmbeddingPYG(MessagePassing):
         vj = x_j  # Destination node features
         # Concatenate node and state features
         zij = torch.cat([vi, vj], dim=-1)
-        Zij = self.emb2(zij)
-        scalars = Zij[..., None, None] * Iij
-        skew_matrices = Zij[..., None, None] * Aij
-        traceless_tensors = Zij[..., None, None] * Sij
+        Zij = (self.emb2(zij)).unsqueeze(-2).unsqueeze(-2)
+        scalars = Zij * Iij # [N_edges, 3, 3, units]
+        skew_matrices = Zij * Aij # [N_edges, 3, 3, units]
+        traceless_tensors = Zij * Sij # [N_edges, 3, 3, units]
         return {"I": scalars, "A": skew_matrices, "S": traceless_tensors}
 
     def aggregate(self, graph, index, dim_size=None):
         """Aggregate messages for node updates."""
-        scalars = scatter_add(graph.I, index, dim_size=dim_size)
-        skew_matrices = scatter_add(graph.A, index, dim_size=dim_size)
-        traceless_tensors = scatter_add(graph.S, index, dim_size=dim_size)
-        return scalars, skew_matrices, traceless_tensors
+        tensors = scatter_add(graph.I + graph.A + graph.S, index, dim_size=dim_size)
+        return tensors
 
     def forward(self, graph: Data, state_attr=None):
         """
@@ -120,11 +118,13 @@ class TensorEmbeddingPYG(MessagePassing):
         W3 = self.distance_proj3(edge_attr) * C.view(-1, 1)
         edge_vec = edge_vec / torch.norm(edge_vec, dim=1, keepdim=True).clamp(min=1e-6)
 
+        Id = torch.eye(3, 3, device=edge_vec.device, dtype=edge_vec.dtype).view(1, 3, 3, 1)
+        
         # Radial tensor components
         Iij, Aij, Sij = new_radial_tensor(
-            torch.eye(3, 3, device=edge_vec.device, dtype=edge_vec.dtype).unsqueeze(0).unsqueeze(0),
-            vector_to_skewtensor(edge_vec).unsqueeze(-3),
-            vector_to_symtensor(edge_vec).unsqueeze(-3),
+            Id, # [1, 3, 3, 1]
+            vector_to_skewtensor(edge_vec, Id).unsqueeze(-1), # [N_edges, 3, 3, 1]
+            vector_to_symtensor(edge_vec, Id), # [N_edges, 3, 3, 1]
             W1,
             W2,
             W3,
@@ -142,14 +142,15 @@ class TensorEmbeddingPYG(MessagePassing):
         )
 
         graph.I, graph.A, graph.S = msg["I"], msg["A"], msg["S"]
-        scalars, skew_matrices, traceless_tensors = self.aggregate(graph, edge_index[1], dim_size=x.size(0))
+        tensors = self.aggregate(graph, edge_index[1], dim_size=x.size(0))
 
         # Node update
-        norm = tensor_norm(scalars + skew_matrices + traceless_tensors)
+        norm = tensor_norm(tensors)
         norm = self.init_norm(norm)
-        scalars = self.linears_tensor[0](scalars.permute(0, 2, 3, 1)).permute(0, 3, 1, 2)
-        skew_matrices = self.linears_tensor[1](skew_matrices.permute(0, 2, 3, 1)).permute(0, 3, 1, 2)
-        traceless_tensors = self.linears_tensor[2](traceless_tensors.permute(0, 2, 3, 1)).permute(0, 3, 1, 2)
+        scalars, skew_matrices, traceless_tensors = decompose_tensor(tensors, Id)
+        scalars = self.linears_tensor[0](scalars)
+        skew_matrices = self.linears_tensor[1](skew_matrices)
+        traceless_tensors = self.linears_tensor[2](traceless_tensors)
         for linear_scalar in self.linears_scalar:
             norm = self.act(linear_scalar(norm))
         norm = norm.reshape(norm.shape[0], self.units, 3)
