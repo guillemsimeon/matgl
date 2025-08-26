@@ -117,8 +117,8 @@ class TensorEmbeddingPYG(MessagePassing):
         W2 = self.distance_proj2(edge_attr) * C.view(-1, 1)
         W3 = self.distance_proj3(edge_attr) * C.view(-1, 1)
         edge_vec = edge_vec / torch.norm(edge_vec, dim=1, keepdim=True).clamp(min=1e-6)
-
-        Id = torch.eye(3, 3, device=edge_vec.device, dtype=edge_vec.dtype).view(1, 3, 3, 1)
+        
+        Id = graph.Id
         
         # Radial tensor components
         Iij, Aij, Sij = new_radial_tensor(
