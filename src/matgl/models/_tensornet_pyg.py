@@ -229,6 +229,7 @@ class TensorNet(MatGLModel):
 
         # Create identity matrix
         Id = torch.eye(3, device=bond_vec.device, dtype=bond_vec.dtype).view(1, 3, 3, 1)
+        g.Id = Id
         
         # Embedding layer
         X, edge_feat = self.tensor_embedding(g, state_attr)
