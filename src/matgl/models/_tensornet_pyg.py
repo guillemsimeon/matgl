@@ -232,7 +232,7 @@ class TensorNet(MatGLModel):
         g.Id = Id
         
         # Embedding layer
-        X, edge_feat = self.tensor_embedding(g, state_attr)
+        X, state_feat = self.tensor_embedding(g, state_attr)
         # Interaction layers
         for layer in self.layers:
             X = layer(g, X)
