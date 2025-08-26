@@ -77,7 +77,7 @@ class TensorNetInteractionPYG(MessagePassing):
         edge_weight = graph.bond_dist  # Assuming bond_dist is stored in graph
         edge_attr = graph.edge_attr  # Assuming edge_attr is stored in graph
         
-        Id = torch.eye(3, device=edge_attr.device, dtype=edge_attr.dtype).view(1, 3, 3, 1)
+        Id = graph.Id
 
         # Process edge attributes
         C = cosine_cutoff(edge_weight, self.cutoff)
